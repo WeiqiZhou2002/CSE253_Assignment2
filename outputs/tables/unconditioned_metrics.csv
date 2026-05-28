@@ -1,0 +1,3 @@
+model,test_loss,perplexity,range_violations,voice_crossings,strong_beat_consonance,repeated_note_ratio,chord_diversity,parallel_fifths_octaves,cadence_score,pitch_class_hist_distance,notes
+Markov baseline,5.576586106939448,264.16822257490765,0.0,0.0,1.0,0.9763157894736842,0.041666666666666664,1.0,1.0,1.1347170398009951,first-order SATB tuple transitions
+GRU model,8.118983268737793,7.612151234819493,0.03125,22.0,0.7222222222222222,0.17894736842105263,1.0,23.0,1.0,0.07233364427860697,four-head autoregressive GRU

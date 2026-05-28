@@ -1,0 +1,10 @@
+numpy
+pandas
+matplotlib
+torch
+PyYAML
+mido
+nbformat
+nbconvert
+music21
+

@@ -1,0 +1,4 @@
+split,sequences,avg_steps
+train,67,64.0
+validation,14,64.0
+test,15,64.0

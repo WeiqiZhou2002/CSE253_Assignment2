@@ -1,0 +1,54 @@
+seed: 42
+
+data:
+  grid: 0.5
+  max_seq_len: 128
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+  max_chorales: null
+  fallback_chorales: 96
+  synthetic_only: false
+
+vocab:
+  min_pitch: 21
+  max_pitch: 108
+  special_tokens:
+    - PAD
+    - REST
+    - HOLD
+    - START
+    - END
+
+training:
+  batch_size: 16
+  epochs: 8
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  grad_clip: 1.0
+  device: cpu
+
+unconditioned_model:
+  embedding_dim: 64
+  hidden_dim: 128
+  num_layers: 2
+  dropout: 0.2
+  temperature: 1.0
+  sample_length: 96
+
+conditioned_model:
+  embedding_dim: 64
+  hidden_dim: 128
+  num_layers: 2
+  dropout: 0.2
+  bidirectional: true
+  temperature: 0.9
+  sample_length: 96
+
+paths:
+  processed_data: outputs/processed/bach_chorales.pkl
+  figures_dir: outputs/figures
+  tables_dir: outputs/tables
+  midi_dir: outputs/midi
+  checkpoints_dir: outputs/checkpoints
+  logs_dir: outputs/logs
