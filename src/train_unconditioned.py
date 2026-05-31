@@ -12,11 +12,13 @@ from torch import nn
 
 from .baselines import MarkovSATBBaseline
 from .data import build_dataset, load_processed_dataset, save_processed_dataset
+from .decode import rerank_generated_candidates
 from .evaluate import aggregate_pitch_histogram, save_table, sequence_music_metrics
 from .midi_io import satb_matrix_to_midi
 from .models import SATBGRULanguageModel
 from .plots import plot_metric_comparison, plot_training_curve
-from .sample import sample_from_logits
+from .postprocess import allowed_pitch_ids, polish_generated_sequence
+from .sample import sample_from_allowed_logits
 from .tokenization import decode_token_matrix, special_id
 from .utils import PROJECT_ROOT, batched, ensure_project_dirs, load_config, resolve_device, save_json, set_seed
 
@@ -75,7 +77,9 @@ def generate_unconditioned(
     length: int,
     temperature: float,
     banned_ids: list[int],
+    allowed_ids_by_voice: dict[str, list[int]],
     device: torch.device,
+    top_k: int = 5,
 ) -> np.ndarray:
     """Sample a token matrix from an autoregressive model."""
     model.eval()
@@ -84,8 +88,17 @@ def generate_unconditioned(
         for _ in range(length - 1):
             x = torch.as_tensor(generated, dtype=torch.long, device=device).unsqueeze(0)
             outputs = model(x)
+            voice_names = ["soprano", "alto", "tenor", "bass"]
             next_state = [
-                int(sample_from_logits(outputs[voice][0, -1].detach().cpu(), temperature, banned_ids).item())
+                int(
+                    sample_from_allowed_logits(
+                        outputs[voice][0, -1].detach().cpu(),
+                        allowed_ids_by_voice[voice_names[voice]],
+                        temperature=temperature,
+                        top_k=top_k,
+                        banned_ids=banned_ids,
+                    ).item()
+                )
                 for voice in range(4)
             ]
             generated.append(next_state)
@@ -101,6 +114,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     id_to_token = dataset["id_to_token"]
     pad_id = special_id(token_to_id, "PAD")
     banned_ids = [special_id(token_to_id, name) for name in ["PAD", "REST", "HOLD", "START", "END"]]
+    allowed_ids_by_voice = allowed_pitch_ids(token_to_id)
     device = resolve_device(config["training"]["device"])
 
     markov = MarkovSATBBaseline(pad_id=pad_id, seed=int(config["seed"])).fit(dataset["train"])
@@ -146,17 +160,6 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
 
     test_loss = _evaluate_loss(model, dataset["test"], pad_id, batch_size, device)
     test_perplexity = float(math.exp(min(test_loss / 4.0, 20.0)))
-    start_state = markov.sample(length=1)[0]
-    sample_tokens = generate_unconditioned(
-        model,
-        start_state=start_state,
-        length=int(model_cfg["sample_length"]),
-        temperature=float(model_cfg["temperature"]),
-        banned_ids=banned_ids,
-        device=device,
-    )
-    sample_matrix = decode_token_matrix(sample_tokens, id_to_token)
-
     paths = config["paths"]
     midi_dir = PROJECT_ROOT / paths["midi_dir"]
     tables_dir = PROJECT_ROOT / paths["tables_dir"]
@@ -164,10 +167,35 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     checkpoints_dir = PROJECT_ROOT / paths["checkpoints_dir"]
     logs_dir = PROJECT_ROOT / paths["logs_dir"]
 
+    ref_hist = aggregate_pitch_histogram(dataset["train_pitches"])
+    candidate_tokens: list[np.ndarray] = []
+    n_candidates = int(model_cfg.get("rerank_candidates", 30))
+    for candidate_id in range(n_candidates):
+        torch.manual_seed(int(config["seed"]) + candidate_id)
+        start_state = dataset["train"][candidate_id % len(dataset["train"])][0]
+        candidate_tokens.append(
+            generate_unconditioned(
+                model,
+                start_state=start_state,
+                length=int(model_cfg["sample_length"]),
+                temperature=float(model_cfg.get("temperature", 0.7)),
+                banned_ids=banned_ids,
+                allowed_ids_by_voice=allowed_ids_by_voice,
+                device=device,
+                top_k=int(model_cfg.get("top_k", 5)),
+            )
+        )
+    sample_matrix, candidate_rows = rerank_generated_candidates(
+        candidate_tokens,
+        id_to_token=id_to_token,
+        reference_hist=ref_hist,
+        steps_per_measure=int(round(4.0 / float(dataset["metadata"]["grid"]))),
+        max_repeat_steps=6,
+    )
+
     satb_matrix_to_midi(markov_sample, midi_dir / "baseline_unconditioned.mid", grid=float(dataset["metadata"]["grid"]))
     satb_matrix_to_midi(sample_matrix, midi_dir / "symbolic_unconditioned.mid", grid=float(dataset["metadata"]["grid"]))
 
-    ref_hist = aggregate_pitch_histogram(dataset["train_pitches"])
     rows = [
         {
             "model": "Markov baseline",
@@ -177,14 +205,15 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
             "notes": "first-order SATB tuple transitions",
         },
         {
-            "model": "GRU model",
+            "model": "GRU + postprocess + rerank",
             "test_loss": test_loss,
             "perplexity": test_perplexity,
             **sequence_music_metrics(sample_matrix, ref_hist),
-            "notes": "four-head autoregressive GRU",
+            "notes": f"best of {n_candidates} top-k temperature samples",
         },
     ]
     save_table(rows, tables_dir / "unconditioned_metrics.csv")
+    save_table(candidate_rows, tables_dir / "unconditioned_candidate_rerank.csv")
     save_json(history, logs_dir / "unconditioned_history.json")
     plot_training_curve(history, figures_dir / "unconditioned_training_curve.png", "Unconditioned GRU Training Curve")
     plot_metric_comparison(
@@ -217,4 +246,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

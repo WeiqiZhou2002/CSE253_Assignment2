@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 
+from .metrics_music import VOICE_RANGES
 from .tokenization import REST_VALUE, build_vocab, encode_pitch_matrix
 from .utils import ensure_dir, set_seed
 
@@ -175,6 +176,39 @@ def _split_indices(n: int, train_ratio: float, val_ratio: float, seed: int) -> t
     return train, val, test
 
 
+def _fits_satb_ranges(matrix: np.ndarray) -> bool:
+    """Return True if all non-rest pitches fit approximate SATB ranges."""
+    for voice_index, voice_name in enumerate(VOICE_ORDER):
+        low, high = VOICE_RANGES[voice_name]
+        values = np.asarray(matrix)[:, voice_index]
+        pitches = values[values >= 0]
+        if len(pitches) and (np.any(pitches < low) or np.any(pitches > high)):
+            return False
+    return True
+
+
+def augment_by_transposition(
+    sequences: list[np.ndarray],
+    shifts: tuple[int, ...] | list[int] = (-5, -3, -2, 0, 2, 3, 5),
+) -> list[np.ndarray]:
+    """Return training-only transposition augmentation that preserves SATB ranges."""
+    augmented: list[np.ndarray] = []
+    seen: set[tuple[bytes, tuple[int, int]]] = set()
+    for sequence in sequences:
+        arr = np.asarray(sequence, dtype=np.int64)
+        for shift in shifts:
+            shifted = arr.copy()
+            mask = shifted >= 0
+            shifted[mask] += int(shift)
+            key = (shifted.tobytes(), shifted.shape)
+            if key in seen:
+                continue
+            if _fits_satb_ranges(shifted):
+                augmented.append(shifted)
+                seen.add(key)
+    return augmented
+
+
 def build_dataset(
     grid: float = 0.5,
     max_seq_len: int = 128,
@@ -184,6 +218,7 @@ def build_dataset(
     max_chorales: int | None = None,
     fallback_chorales: int = 96,
     synthetic_only: bool = False,
+    transpose_shifts: list[int] | tuple[int, ...] | None = None,
     seed: int = 42,
     vocab_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -217,25 +252,35 @@ def build_dataset(
         if not source_note:
             source_note = "Used deterministic fallback corpus."
 
+    train_idx, val_idx, test_idx = _split_indices(len(matrices), train_ratio, val_ratio, seed)
+
+    def pick(items: list[Any], idxs: list[int]) -> list[Any]:
+        return [items[i] for i in idxs]
+
+    train_pitches = pick(matrices, train_idx)
+    val_pitches = pick(matrices, val_idx)
+    test_pitches = pick(matrices, test_idx)
+    train_original_count = len(train_pitches)
+    if transpose_shifts:
+        train_pitches = augment_by_transposition(train_pitches, transpose_shifts)
+
     vocab_config = vocab_config or {}
     token_to_id, id_to_token = build_vocab(
         min_pitch=int(vocab_config.get("min_pitch", 21)),
         max_pitch=int(vocab_config.get("max_pitch", 108)),
         special_tokens=vocab_config.get("special_tokens"),
     )
-    tokens = [encode_pitch_matrix(matrix, token_to_id) for matrix in matrices]
-    train_idx, val_idx, test_idx = _split_indices(len(tokens), train_ratio, val_ratio, seed)
-
-    def pick(items: list[Any], idxs: list[int]) -> list[Any]:
-        return [items[i] for i in idxs]
+    train_tokens = [encode_pitch_matrix(matrix, token_to_id) for matrix in train_pitches]
+    val_tokens = [encode_pitch_matrix(matrix, token_to_id) for matrix in val_pitches]
+    test_tokens = [encode_pitch_matrix(matrix, token_to_id) for matrix in test_pitches]
 
     dataset = {
-        "train": pick(tokens, train_idx),
-        "val": pick(tokens, val_idx),
-        "test": pick(tokens, test_idx),
-        "train_pitches": pick(matrices, train_idx),
-        "val_pitches": pick(matrices, val_idx),
-        "test_pitches": pick(matrices, test_idx),
+        "train": train_tokens,
+        "val": val_tokens,
+        "test": test_tokens,
+        "train_pitches": train_pitches,
+        "val_pitches": val_pitches,
+        "test_pitches": test_pitches,
         "token_to_id": token_to_id,
         "id_to_token": id_to_token,
         "metadata": {
@@ -244,10 +289,12 @@ def build_dataset(
             "grid": grid,
             "max_seq_len": max_seq_len,
             "voice_order": VOICE_ORDER,
-            "num_sequences": len(tokens),
-            "num_train": len(train_idx),
-            "num_val": len(val_idx),
-            "num_test": len(test_idx),
+            "num_sequences": len(matrices),
+            "num_train": len(train_tokens),
+            "num_train_original": train_original_count,
+            "num_val": len(val_tokens),
+            "num_test": len(test_tokens),
+            "transpose_shifts": list(transpose_shifts or []),
             "vocab_size": len(token_to_id),
         },
     }

@@ -37,6 +37,18 @@ def _table(path: Path) -> str:
     return df.to_html(index=False, border=0)
 
 
+def _table_preview(path: Path, max_rows: int = 8) -> str:
+    if not path.exists():
+        return f"*Missing table: `{path.name}`*"
+    df = pd.read_csv(path)
+    if "badness" in df.columns:
+        df = df.sort_values("badness", ascending=True)
+    df = df.head(max_rows)
+    numeric_cols = df.select_dtypes(include="number").columns
+    df[numeric_cols] = df[numeric_cols].round(3)
+    return df.to_html(index=False, border=0)
+
+
 def _snippet(path: Path, start: str, end: str | None = None, max_lines: int = 80) -> str:
     if not path.exists():
         return ""
@@ -90,7 +102,11 @@ def build_notebook(config: dict[str, Any]) -> nbf.NotebookNode:
             "Each piece is represented as a fixed-grid matrix with shape `T x 4`, ordered as "
             "`[soprano, alto, tenor, bass]`. Values are MIDI pitch tokens plus reserved symbols for "
             "`PAD`, `REST`, `HOLD`, `START`, and `END`. The grid size is "
-            f"{meta['grid']} quarter lengths per step."
+            f"{meta['grid']} quarter lengths per step.\n\n"
+            f"The training split contains {meta['num_train']} sequences after training-only transposition "
+            f"augmentation from {meta.get('num_train_original', meta['num_train'])} original training chorales. "
+            f"Validation and test splits are not augmented. Transposition shifts used: "
+            f"`{meta.get('transpose_shifts', [])}`."
         )
     )
     cells.append(nbf.v4.new_markdown_cell("### Split Summary\n\n" + _table(tables_dir / "dataset_summary.csv")))
@@ -113,12 +129,24 @@ def build_notebook(config: dict[str, Any]) -> nbf.NotebookNode:
             "The unconditioned task is modeled as next-step prediction over SATB tuples. "
             "The baseline is a first-order Markov model over complete four-voice states. "
             "The neural model embeds each voice, concatenates the embeddings, processes the sequence with a GRU, "
-            "and predicts the next soprano, alto, tenor, and bass tokens with separate output heads.\n\n"
+            "and predicts the next soprano, alto, tenor, and bass tokens with separate output heads. "
+            "For the final output, the GRU generates multiple low-temperature top-k candidates. Each candidate is "
+            "postprocessed for SATB range/order and reranked with music-theory-inspired badness scores.\n\n"
             + _snippet(ROOT / "src" / "models.py", "class SATBGRULanguageModel", "class SopranoConditionedHarmonizer", max_lines=70)
         )
     )
     cells.append(nbf.v4.new_markdown_cell("### Task 1 Training Curve\n\n" + _image(figures_dir / "unconditioned_training_curve.png", "Unconditioned training curve")))
     cells.append(nbf.v4.new_markdown_cell("### Task 1 Evaluation\n\n" + _table(tables_dir / "unconditioned_metrics.csv")))
+    if (tables_dir / "unconditioned_candidate_rerank.csv").exists():
+        cells.append(
+            nbf.v4.new_markdown_cell(
+                "### Task 1 Candidate Reranking\n\n"
+                "The final unconditioned MIDI is selected from multiple GRU samples. Lower badness is better; "
+                "the score combines range, crossing, dissonance, leap, repetition, pitch-distribution, diversity, "
+                "and cadence terms.\n\n"
+                + _table_preview(tables_dir / "unconditioned_candidate_rerank.csv", max_rows=10)
+            )
+        )
     cells.append(nbf.v4.new_markdown_cell("### Task 1 Metric Comparison\n\n" + _image(figures_dir / "unconditioned_metric_comparison.png", "Unconditioned metric comparison")))
     cells.append(
         nbf.v4.new_markdown_cell(
@@ -126,15 +154,35 @@ def build_notebook(config: dict[str, Any]) -> nbf.NotebookNode:
             "For conditioned generation, the full soprano melody is known in advance. "
             "The baseline predicts the most common lower-voice chord for a soprano pitch class and beat position, "
             "with backoff to pitch-class-only and global counts. The neural model uses a bidirectional GRU over the "
-            "soprano sequence and predicts alto, tenor, and bass at every time step.\n\n"
+            "soprano sequence and predicts alto, tenor, and bass at every time step. Instead of choosing each lower "
+            "voice independently, the upgraded decoder uses beam search with a model-score plus musical-penalty "
+            "objective. "
+            "The final MIDI demo uses a short custom soprano melody so the conditioned sample is musically varied; "
+            "held-out test data is still used for the reported accuracy metrics.\n\n"
             + _snippet(ROOT / "src" / "baselines.py", "class LookupHarmonizationBaseline", max_lines=75)
             + "\n\n"
             + _snippet(ROOT / "src" / "models.py", "class SopranoConditionedHarmonizer", max_lines=65)
+            + "\n\n"
+            + _snippet(ROOT / "src" / "decode.py", "def harmonize_with_beam_search", "def rerank_generated_candidates", max_lines=90)
         )
     )
     cells.append(nbf.v4.new_markdown_cell("### Task 2 Training Curve\n\n" + _image(figures_dir / "conditioned_training_curve.png", "Conditioned training curve")))
     cells.append(nbf.v4.new_markdown_cell("### Task 2 Evaluation\n\n" + _table(tables_dir / "conditioned_metrics.csv")))
     cells.append(nbf.v4.new_markdown_cell("### Task 2 Metric Comparison\n\n" + _image(figures_dir / "conditioned_metric_comparison.png", "Conditioned metric comparison")))
+    if (tables_dir / "deepbach_conditioned_metrics.csv").exists():
+        cells.append(
+            nbf.v4.new_markdown_cell(
+                "### DeepBach-Inspired Gibbs Demo\n\n"
+                "Because DeepBach is especially relevant to Bach chorale harmonization, the final conditioned MIDI "
+                "also includes a lightweight DeepBach-inspired Gibbs sampler. It learns local conditional distributions "
+                "from the real Bach chorale corpus, keeps the soprano melody fixed, and repeatedly resamples the lower "
+                "voices using Bach-trained context plus simple voice-leading constraints. This is not the pretrained "
+                "official DeepBach model; it is a local class-project implementation in the same spirit.\n\n"
+                + _table(tables_dir / "deepbach_conditioned_metrics.csv")
+                + "\n\n"
+                + _snippet(ROOT / "src" / "deepbach_gibbs.py", "class DeepBachGibbsSampler", "def select_melodic_soprano", max_lines=90)
+            )
+        )
     cells.append(
         nbf.v4.new_markdown_cell(
             "## Evaluation Design\n\n"
@@ -165,7 +213,7 @@ def build_notebook(config: dict[str, Any]) -> nbf.NotebookNode:
             "- The eighth-note grid is simple and loses some expressive rhythmic detail.\n"
             "- The neural models are deliberately small; longer training and attention-based models could improve global form.\n"
             "- Voice-leading metrics are heuristics, not substitutes for human listening.\n"
-            "- If `music21` is installed, the same pipeline can train on the real Bach chorale corpus instead of the fallback data.\n\n"
+            "- This final run uses the real `music21` Bach chorale corpus, but parsing SATB voices from symbolic scores is still approximate.\n\n"
             "Useful extensions include rule-based postprocessing, temperature comparisons, custom melody harmonization, "
             "and optional MIDI-to-MP3 rendering for easier presentation playback."
         )

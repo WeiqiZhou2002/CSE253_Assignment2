@@ -10,14 +10,14 @@ from .utils import ensure_dir
 
 
 VOICE_PROGRAMS = {
-    "soprano": 52,
-    "alto": 52,
-    "tenor": 52,
-    "bass": 52,
+    "soprano": 73,
+    "alto": 68,
+    "tenor": 42,
+    "bass": 43,
 }
 
 
-def _note_segments(values: np.ndarray) -> list[tuple[int | None, int]]:
+def _note_segments(values: np.ndarray, max_segment_steps: int | None = None) -> list[tuple[int | None, int]]:
     """Collapse repeated notes into (pitch-or-rest, duration-steps) segments."""
     segments: list[tuple[int | None, int]] = []
     i = 0
@@ -30,7 +30,12 @@ def _note_segments(values: np.ndarray) -> list[tuple[int | None, int]]:
             if next_pitch != pitch:
                 break
             j += 1
-        segments.append((pitch, j - i))
+        duration = j - i
+        if pitch is not None and max_segment_steps is not None and max_segment_steps > 0:
+            while duration > max_segment_steps:
+                segments.append((pitch, max_segment_steps))
+                duration -= max_segment_steps
+        segments.append((pitch, duration))
         i = j
     return segments
 
@@ -40,6 +45,7 @@ def satb_matrix_to_midi(
     output_path: str | Path,
     grid: float = 0.5,
     tempo: int = 90,
+    max_note_steps: int | None = 8,
 ) -> Path:
     """Write a T x 4 SATB pitch matrix as a multi-track MIDI file."""
     output_path = Path(output_path)
@@ -62,7 +68,7 @@ def satb_matrix_to_midi(
         track.append(MetaMessage("track_name", name=voice_name, time=0))
         track.append(Message("program_change", program=VOICE_PROGRAMS[voice_name], channel=voice_index, time=0))
         silence_ticks = 0
-        for pitch, duration_steps in _note_segments(seq[:, voice_index]):
+        for pitch, duration_steps in _note_segments(seq[:, voice_index], max_segment_steps=max_note_steps):
             duration_ticks = duration_steps * ticks_per_step
             if pitch is None:
                 silence_ticks += duration_ticks
@@ -83,4 +89,3 @@ def write_reference_midi(dataset: dict, output_path: str | Path) -> Path:
     sequence = dataset["test_pitches"][0]
     grid = float(dataset["metadata"]["grid"])
     return satb_matrix_to_midi(sequence, output_path, grid=grid)
-

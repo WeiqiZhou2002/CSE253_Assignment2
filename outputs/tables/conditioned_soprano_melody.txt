@@ -1,0 +1,11 @@
+Conditioned-task soprano melody
+grid_quarter_length: 0.5
+format: note(duration_in_quarter_lengths)
+
+C4(1) D4(1) E4(1) G4(1) A4(1) G4(1) F4(1) E4(1) F4(1) G4(1) A4(1) G4(1) E4(1) D4(1) C4(2) G4(1) A4(1) G4(1) F4(1) E4(1) F4(1) G4(1) E4(1) D4(1) E4(1) F4(1) D4(1) C4(1) D4(1) C4(2)
+
+full_midi_pitches_by_quarter_note:
+60 62 64 67 69 67 65 64 65 67 69 67 64 62 60 60 67 69 67 65 64 65 67 64 62 64 65 62 60 62 60 60
+
+compact_midi_pitches:
+60 62 64 67 69 67 65 64 65 67 69 67 64 62 60 67 69 67 65 64 65 67 64 62 64 65 62 60 62 60

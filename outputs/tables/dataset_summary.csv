@@ -1,4 +1,4 @@
 split,sequences,avg_steps
-train,67,64.0
-validation,14,64.0
-test,15,64.0
+train,1107,99.48148148148148
+validation,56,99.28571428571429
+test,55,100.69090909090909

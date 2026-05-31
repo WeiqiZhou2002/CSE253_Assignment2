@@ -1,0 +1,2 @@
+model,alto_accuracy,tenor_accuracy,bass_accuracy,average_voice_accuracy,exact_atb_accuracy,range_violations,voice_crossings,strong_beat_consonance,repeated_note_ratio,chord_diversity,parallel_fifths_octaves,cadence_score,pitch_class_hist_distance,notes
+DeepBach-inspired Gibbs,,,,,,0.0,0.0,1.0,0.4444444444444444,0.359375,2.0,0.4,0.3961863668281553,Gibbs sampler over Bach-trained local conditional distributions

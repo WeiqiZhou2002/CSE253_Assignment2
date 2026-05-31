@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from .metrics_music import (
+    VOICE_RANGES,
     cadence_quality_heuristic,
     chord_diversity,
     consonance_rate,
@@ -17,6 +18,7 @@ from .metrics_music import (
     voice_crossing_count,
     voice_range_violation_rate,
 )
+from .tokenization import valid_pitch
 from .utils import ensure_dir
 
 
@@ -45,6 +47,64 @@ def sequence_music_metrics(
     if reference_hist is not None:
         metrics["pitch_class_hist_distance"] = histogram_distance(hist, reference_hist)
     return metrics
+
+
+def large_leap_rate(sequence: np.ndarray, threshold: int = 12) -> float:
+    """Return fraction of same-voice adjacent movements larger than threshold."""
+    seq = np.asarray(sequence)
+    total = 0
+    large = 0
+    for voice_index in range(seq.shape[1]):
+        prev = None
+        for value in seq[:, voice_index]:
+            if not valid_pitch(value):
+                prev = None
+                continue
+            pitch = int(value)
+            if prev is not None:
+                total += 1
+                large += int(abs(pitch - prev) > threshold)
+            prev = pitch
+    return large / total if total else 0.0
+
+
+def evaluate_music_quality(
+    sequence: np.ndarray,
+    reference_hist: np.ndarray | None = None,
+    steps_per_measure: int = 8,
+) -> dict[str, float]:
+    """Return normalized musical-quality metrics used by the reranker."""
+    seq = np.asarray(sequence)
+    raw = sequence_music_metrics(seq, reference_hist, steps_per_measure)
+    denom_crossing = max(1, seq.shape[0] * 3)
+    denom_parallel = max(1, seq.shape[0] - 1)
+    metrics = {
+        "range_violation_rate": raw["range_violations"],
+        "voice_crossing_rate": raw["voice_crossings"] / denom_crossing,
+        "large_leap_rate": large_leap_rate(seq),
+        "strong_beat_dissonance_rate": 1.0 - raw["strong_beat_consonance"],
+        "parallel_fifths_octaves_rate": raw["parallel_fifths_octaves"] / denom_parallel,
+        "repetition_penalty": max(0.0, raw["repeated_note_ratio"] - 0.78),
+        "chord_diversity": raw["chord_diversity"],
+        "cadence_score": raw["cadence_score"],
+        "pitch_histogram_distance": raw.get("pitch_class_hist_distance", 0.0),
+    }
+    return metrics
+
+
+def musical_badness_score(metrics: dict[str, float]) -> float:
+    """Lower is better; combine musical error rates into one reranking score."""
+    return float(
+        4.0 * metrics.get("range_violation_rate", 0.0)
+        + 5.0 * metrics.get("voice_crossing_rate", 0.0)
+        + 3.0 * metrics.get("parallel_fifths_octaves_rate", 0.0)
+        + 2.0 * metrics.get("strong_beat_dissonance_rate", 0.0)
+        + 1.0 * metrics.get("large_leap_rate", 0.0)
+        + 1.0 * metrics.get("repetition_penalty", 0.0)
+        + 1.0 * metrics.get("pitch_histogram_distance", 0.0)
+        - 0.5 * metrics.get("chord_diversity", 0.0)
+        - 2.0 * metrics.get("cadence_score", 0.0)
+    )
 
 
 def aggregate_pitch_histogram(sequences: list[np.ndarray]) -> np.ndarray:
@@ -76,4 +136,3 @@ def save_table(rows: list[dict[str, Any]], path: str | Path) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     df.to_csv(path, index=False)
     return df
-

@@ -11,11 +11,13 @@ from torch import nn
 
 from .baselines import LookupHarmonizationBaseline
 from .data import build_dataset, load_processed_dataset, save_processed_dataset
+from .decode import harmonize_with_beam_search
 from .evaluate import aggregate_pitch_histogram, save_table, sequence_music_metrics
 from .midi_io import satb_matrix_to_midi
 from .models import SopranoConditionedHarmonizer
 from .plots import plot_metric_comparison, plot_training_curve
-from .sample import argmax_from_logits
+from .postprocess import allowed_pitch_ids, polish_generated_sequence
+from .sample import sample_from_allowed_logits
 from .tokenization import decode_token_matrix, special_id
 from .utils import PROJECT_ROOT, batched, ensure_project_dirs, load_config, resolve_device, save_json, set_seed
 
@@ -102,7 +104,9 @@ def generate_harmonization(
     model: SopranoConditionedHarmonizer,
     soprano_tokens: np.ndarray,
     banned_ids: list[int],
+    allowed_ids_by_voice: dict[str, list[int]],
     device: torch.device,
+    temperature: float = 0.9,
 ) -> np.ndarray:
     """Generate ATB token predictions for a fixed soprano melody."""
     model.eval()
@@ -112,9 +116,62 @@ def generate_harmonization(
     with torch.no_grad():
         logits = model(soprano)
         for voice_index, voice_logits in enumerate(logits, start=1):
+            voice_name = ["alto", "tenor", "bass"][voice_index - 1]
             for t in range(len(soprano_tokens)):
-                output[t, voice_index] = int(argmax_from_logits(voice_logits[0, t].detach().cpu(), banned_ids).item())
+                output[t, voice_index] = int(
+                    sample_from_allowed_logits(
+                        voice_logits[0, t].detach().cpu(),
+                        allowed_ids_by_voice[voice_name],
+                        temperature=temperature,
+                        top_k=8,
+                        banned_ids=banned_ids,
+                    ).item()
+                )
     return output
+
+
+def make_custom_soprano_tokens(token_to_id: dict[Any, int], max_steps: int = 96) -> np.ndarray:
+    """Return the demo soprano melody for final conditioned generation."""
+    custom_soprano_midi_quarter = [
+        60,
+        62,
+        64,
+        67,
+        69,
+        67,
+        65,
+        64,
+        65,
+        67,
+        69,
+        67,
+        64,
+        62,
+        60,
+        60,
+        67,
+        69,
+        67,
+        65,
+        64,
+        65,
+        67,
+        64,
+        62,
+        64,
+        65,
+        62,
+        60,
+        62,
+        60,
+        60,
+    ]
+
+    expanded: list[int] = []
+    for pitch in custom_soprano_midi_quarter:
+        expanded.extend([pitch, pitch])
+    expanded = expanded[:max_steps]
+    return np.asarray([int(token_to_id[pitch]) for pitch in expanded], dtype=np.int64)
 
 
 def run(config: dict[str, Any]) -> dict[str, Any]:
@@ -126,6 +183,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
     id_to_token = dataset["id_to_token"]
     pad_id = special_id(token_to_id, "PAD")
     banned_ids = [special_id(token_to_id, name) for name in ["PAD", "REST", "HOLD", "START", "END"]]
+    allowed_ids_by_voice = allowed_pitch_ids(token_to_id)
     device = resolve_device(config["training"]["device"])
 
     steps_per_measure = int(round(4.0 / float(dataset["metadata"]["grid"])))
@@ -171,11 +229,24 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
 
     test_stats = _evaluate_model(model, dataset["test"], pad_id, banned_ids, batch_size, device)
     sample_len = min(int(model_cfg["sample_length"]), len(dataset["test"][0]))
-    soprano_tokens = dataset["test"][0][:sample_len, 0]
+    if bool(model_cfg.get("use_custom_demo_melody", False)):
+        soprano_tokens = make_custom_soprano_tokens(token_to_id, max_steps=int(model_cfg["sample_length"]))
+    else:
+        soprano_tokens = dataset["test"][0][:sample_len, 0]
     baseline_tokens = baseline.predict(soprano_tokens)
-    model_tokens = generate_harmonization(model, soprano_tokens, banned_ids, device)
-    baseline_matrix = decode_token_matrix(baseline_tokens, id_to_token)
-    model_matrix = decode_token_matrix(model_tokens, id_to_token)
+    model_tokens = harmonize_with_beam_search(
+        model,
+        soprano_tokens,
+        allowed_ids_by_voice=allowed_ids_by_voice,
+        id_to_token=id_to_token,
+        device=device,
+        beam_size=int(model_cfg.get("beam_size", 8)),
+        top_k_per_voice=int(model_cfg.get("top_k_per_voice", 5)),
+        rule_weight=float(model_cfg.get("rule_weight", 1.0)),
+        steps_per_measure=steps_per_measure,
+    )
+    baseline_matrix = polish_generated_sequence(decode_token_matrix(baseline_tokens, id_to_token), max_repeat_steps=6)
+    model_matrix = polish_generated_sequence(decode_token_matrix(model_tokens, id_to_token), max_repeat_steps=6)
 
     paths = config["paths"]
     midi_dir = PROJECT_ROOT / paths["midi_dir"]
@@ -203,7 +274,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
             "average_voice_accuracy": test_stats["average_voice_accuracy"],
             "exact_atb_accuracy": test_stats["exact_atb_accuracy"],
             **sequence_music_metrics(model_matrix, ref_hist, steps_per_measure),
-            "notes": "bidirectional GRU conditioned on full soprano",
+            "notes": "bidirectional GRU with beam search and SATB rule penalties",
         },
     ]
     save_table(rows, tables_dir / "conditioned_metrics.csv")
@@ -239,4 +310,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
