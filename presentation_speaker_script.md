@@ -45,6 +45,8 @@ We load real Bach chorales from the `music21` corpus. In the final run, the data
 
 After quantization, every piece becomes a matrix with four columns: soprano, alto, tenor, and bass. Each cell is encoded as a MIDI pitch token, plus a few special tokens such as PAD, REST, HOLD, START, and END.
 
+One important implementation detail is that we use absolute offsets when reading from `music21`. If we accidentally use measure-local offsets, most notes get painted onto the beginning of the matrix and the rest of the piece becomes REST. We fixed this by flattening each part before reading offsets.
+
 The original split is 260 training chorales, 56 validation chorales, and 55 test chorales. To increase the training data, we apply transposition augmentation only to the training split. After augmentation and range filtering, the training set has 358 sequences. Validation and test are not augmented, so evaluation remains fair.
 
 Transition: Before training models, we checked whether this representation looked musically reasonable.
@@ -104,6 +106,8 @@ Speaker: Member B
 Task 2 is soprano-conditioned harmonization.
 
 Here, the soprano melody is fixed. The model's job is to generate the lower three voices: alto, tenor, and bass.
+
+For the final conditioned decoder, we do not allow REST as an output for the lower voices. The reason is that this task is four-part harmonization, not voice-activity detection. After fixing the offset bug, real REST tokens are very rare in the Bach chorale grid, so allowing REST would mostly give the model an easy way to generate silence instead of harmony.
 
 The baseline is a lookup model. It uses soprano pitch class and beat position, then predicts the most common lower-voice tuple from the training data. This baseline is useful because Bach chorales have many repeated local patterns, so a simple local method can already be strong.
 
