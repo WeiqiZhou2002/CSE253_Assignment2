@@ -45,7 +45,7 @@ We load real Bach chorales from the `music21` corpus. In the final run, the data
 
 After quantization, every piece becomes a matrix with four columns: soprano, alto, tenor, and bass. Each cell is encoded as a MIDI pitch token, plus a few special tokens such as PAD, REST, HOLD, START, and END.
 
-The original split is 260 training chorales, 56 validation chorales, and 55 test chorales. To increase the training data, we apply transposition augmentation only to the training split. After augmentation, the training set has 1107 sequences. Validation and test are not augmented, so evaluation remains fair.
+The original split is 260 training chorales, 56 validation chorales, and 55 test chorales. To increase the training data, we apply transposition augmentation only to the training split. After augmentation and range filtering, the training set has 358 sequences. Validation and test are not augmented, so evaluation remains fair.
 
 Transition: Before training models, we checked whether this representation looked musically reasonable.
 
@@ -88,11 +88,11 @@ Speaker: Member A
 
 The left plot shows that the GRU training and validation loss decrease over 8 epochs. So the model is learning the token prediction task.
 
-The right plot compares musical metrics for the unconditioned output. The reranked GRU sample has zero range violations and zero voice crossings. It also has a much smaller pitch-class histogram distance than the Markov sample: about 0.38 for the GRU output compared with about 1.35 for the Markov output.
+The right plot compares musical metrics for the unconditioned output. The reranked GRU sample has zero range violations and zero voice crossings. It also has slightly higher chord diversity than the Markov sample, about 0.73 compared with about 0.66.
 
-The GRU output has per-voice perplexity around 1.09. The Markov baseline has perplexity around 1.40, but the comparison is not perfectly apples-to-apples because the Markov model scores full SATB tuples while the GRU predicts voices separately.
+The GRU output has per-voice perplexity around 4.35. The Markov baseline has tuple perplexity around 205, but the comparison is not perfectly apples-to-apples because the Markov model scores full SATB tuples while the GRU predicts voices separately.
 
-The main takeaway is that candidate generation plus symbolic reranking improves the final musical behavior. The neural model proposes possibilities, and the rule-based score helps choose the least problematic one.
+The main takeaway is that after fixing the dataset, this task is much harder and more honest. Candidate generation plus symbolic reranking still helps avoid obvious SATB failures, but the generated music is not perfect.
 
 Transition: Task 2 uses the same SATB representation, but the model is conditioned on a melody.
 
@@ -122,11 +122,11 @@ Speaker: Member B
 
 The conditioned GRU training curve also decreases, so the model is learning the lower-voice prediction task.
 
-One interesting result is that the lookup baseline gets very high exact-match accuracy on the tokenized test data. This happens because many local soprano and beat-position contexts repeat in the corpus.
+One interesting result is that the BiGRU now performs better than the lookup baseline on predictive accuracy. The lookup baseline has average voice accuracy around 0.23, while the BiGRU reaches about 0.39. Exact lower-voice accuracy is still low for both models, around 0.10 for lookup and 0.12 for BiGRU.
 
 But exact match is not the whole story. For harmonization, there are many valid alto, tenor, and bass choices for the same soprano melody. A model can be musically acceptable even if it does not match the original Bach lower voices exactly.
 
-The final conditioned MIDI uses the DeepBach-inspired Gibbs sampler. On the final conditioned output, the strong-beat consonance is 100 percent, with zero range violations and zero voice crossings. It also avoids the long repeated-note problem we saw earlier.
+The final conditioned MIDI uses the DeepBach-inspired Gibbs sampler. On the final conditioned output, the strong-beat consonance is about 99 percent, with zero range violations and zero voice crossings. It also avoids the long repeated-note problem we saw earlier.
 
 The main lesson is that decoding strategy matters a lot. Cross-entropy training gives us probabilities, but beam search, Gibbs sampling, and symbolic penalties make the generated music more listenable.
 

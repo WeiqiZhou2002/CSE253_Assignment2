@@ -61,7 +61,10 @@ def score_to_satb_matrix(score: Any, grid: float = 0.5) -> np.ndarray:
     matrix = np.full((steps, 4), REST_VALUE, dtype=np.int64)
 
     for voice_index, part in enumerate(parts):
-        for element in part.recurse().notesAndRests:
+        # `element.offset` from a recursive iterator can be local to the
+        # containing measure. Flattening gives offsets relative to the full part,
+        # which is what we need when painting notes onto one global time axis.
+        for element in part.flatten().notesAndRests:
             offset = float(element.offset)
             duration = float(element.duration.quarterLength)
             start = max(0, int(round(offset / grid)))
